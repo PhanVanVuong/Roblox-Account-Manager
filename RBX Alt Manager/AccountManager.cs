@@ -36,6 +36,8 @@ namespace RBX_Alt_Manager
     public partial class AccountManager : Form
     {
         public static AccountManager Instance;
+        private ChromeExtensionBridge ChromeBridge;
+        private readonly BorderedTextBox AccountSearch = new BorderedTextBox();
         public static List<Account> AccountsList;
         public static List<Account> SelectedAccounts;
         public static List<Game> RecentGames;
@@ -80,8 +82,9 @@ namespace RBX_Alt_Manager
         public static IniSection Watcher;
         public static IniSection Prompts;
 
-        private static Mutex rbxMultiMutex;
+        private readonly MultiRobloxSession MultiRoblox = new MultiRobloxSession();
         private readonly static object saveLock = new object();
+        private static long saveRevision, writtenRevision;
         private readonly static object rgSaveLock = new object();
         public event EventHandler<GameArgs> RecentGameAdded;
 
@@ -143,8 +146,8 @@ namespace RBX_Alt_Manager
             if (!General.Exists("AutoCloseLastProcess")) General.Set("AutoCloseLastProcess", "true");
             if (!General.Exists("ShowPresence")) General.Set("ShowPresence", "true");
             if (!General.Exists("PresenceUpdateRate")) General.Set("PresenceUpdateRate", "5");
-            if (!General.Exists("UnlockFPS")) General.Set("UnlockFPS", "false");
-            if (!General.Exists("MaxFPSValue")) General.Set("MaxFPSValue", "120");
+            if (!General.Exists("UnlockFPS")) General.Set("UnlockFPS", "true");
+            if (!General.Exists("MaxFPSValue")) General.Set("MaxFPSValue", "30");
             if (!General.Exists("UseCefSharpBrowser")) General.Set("UseCefSharpBrowser", "false");
 
             if (!Developer.Exists("DevMode")) Developer.Set("DevMode", "false");
@@ -165,12 +168,17 @@ namespace RBX_Alt_Manager
             if (!AccountControl.Exists("NexusPort")) AccountControl.Set("NexusPort", "5242");
 
             InitializeComponent();
+            FormClosed += (s, e) => MultiRoblox.Dispose();
+            InitializeAccountSearch();
+            copyToolStripMenuItem.DropDownItems.Insert(2, new ToolStripMenuItem("Copy Cookie", null, copySecurityTokenToolStripMenuItem_Click));
+            AddAccountsStrip.Items.Insert(2, new ToolStripMenuItem("Create Account (User:Pass)", null, (s, e) => CreateAccountByUserPass()));
+            AddAccountsStrip.Items.Add(new ToolStripMenuItem("Chrome Extension...", null, (s, e) => OpenChromeExtensionSetup()));
             this.Rescale();
 
             AccountsList = new List<Account>();
             SelectedAccounts = new List<Account>();
 
-            AccountsView.SetObjects(AccountsList);
+            AccountsView.SetObjects(AccountsList.ToArray());
 
             if (ThemeEditor.UseDarkTopBar) Icon = Properties.Resources.team_KX4_icon_white; // this has to go after or icon wont actually change
 
@@ -243,11 +251,57 @@ namespace RBX_Alt_Manager
         private readonly static string SaveFilePath = Path.Combine(Environment.CurrentDirectory, "AccountData.json");
         private readonly static string RecentGamesFilePath = Path.Combine(Environment.CurrentDirectory, "RecentGames.json"); // i shouldve combined everything that isnt accountdata into one file but oh well im too lazy : |
 
+        private void InitializeAccountSearch()
+        {
+            // Leave a separate row below the right-hand account utility buttons.
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + 32);
+            MinimumSize = new Size(MinimumSize.Width, MinimumSize.Height + 32);
+
+            var SearchLabel = new Label
+            {
+                Text = "Search:",
+                AutoSize = true,
+                Location = new System.Drawing.Point(ClientSize.Width - 281, ClientSize.Height - 29),
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Right
+            };
+
+            AccountSearch.Name = "AccountSearch";
+            AccountSearch.AccessibleName = "Search accounts by username";
+            AccountSearch.Location = new System.Drawing.Point(ClientSize.Width - 227, ClientSize.Height - 32);
+            AccountSearch.Size = new Size(215, 20);
+            AccountSearch.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            AccountSearch.TabIndex = 19;
+            SaveTooltip.SetToolTip(AccountSearch, "Type a username to filter accounts. Clear the text or press Escape to show all accounts.");
+            AccountsView.UseFiltering = true;
+            AccountSearch.TextChanged += AccountSearch_TextChanged;
+            AccountSearch.KeyDown += (sender, e) =>
+            {
+                if (e.KeyCode == Keys.Escape)
+                {
+                    AccountSearch.Clear();
+                    e.SuppressKeyPress = true;
+                }
+            };
+
+            Controls.Add(SearchLabel);
+            Controls.Add(AccountSearch);
+        }
+
+        private void AccountSearch_TextChanged(object sender, EventArgs e)
+        {
+            string Query = AccountSearch.Text.Trim();
+            AccountsView.ModelFilter = Query.Length == 0 ? null : new ModelFilter(model =>
+                model is Account account && account.Username != null &&
+                account.Username.IndexOf(Query, StringComparison.OrdinalIgnoreCase) >= 0);
+            RefreshView();
+        }
+
         private void RefreshView(object obj = null)
         {
             AccountsView.InvokeIfRequired(() =>
             {
-                AccountsView.BuildList();
+                // Rebind from the complete account list, never from the filtered rows.
+                AccountsView.SetObjects(AccountsList.ToArray());
                 if (AccountsView.ShowGroups) AccountsView.BuildGroups();
 
                 if (obj != null)
@@ -342,7 +396,7 @@ namespace RBX_Alt_Manager
                 }
             }
 
-            AccountsView.SetObjects(AccountsList);
+            AccountsView.SetObjects(AccountsList.ToArray());
             RefreshView();
 
             if (AccountsList.Count > 0)
@@ -359,10 +413,24 @@ namespace RBX_Alt_Manager
         {
             if ((!BypassRateLimit && (DateTime.Now - startTime).Seconds < 2) || (!BypassCountCheck && AccountsList.Count == 0)) return;
 
+            long revision = Interlocked.Increment(ref saveRevision);
+            WriteAccountSnapshot(JsonConvert.SerializeObject(AccountsList), revision, PasswordHash.ToArray());
+        }
+
+        internal static Task SaveAccountsInBackground()
+        {
+            long revision = Interlocked.Increment(ref saveRevision);
+            string snapshot = JsonConvert.SerializeObject(AccountsList);
+            byte[] passwordHash = PasswordHash.ToArray();
+            return Task.Run(() => WriteAccountSnapshot(snapshot, revision, passwordHash));
+        }
+
+        private static void WriteAccountSnapshot(string SaveData, long revision, byte[] passwordHash)
+        {
             lock (saveLock)
             {
+                if (revision <= writtenRevision) return;
                 byte[] OldInfo = File.Exists(SaveFilePath) ? File.ReadAllBytes(SaveFilePath) : Array.Empty<byte>();
-                string SaveData = JsonConvert.SerializeObject(AccountsList);
 
                 FileInfo OldFile = new FileInfo(SaveFilePath);
                 FileInfo Backup = new FileInfo($"{SaveFilePath}.backup");
@@ -370,8 +438,8 @@ namespace RBX_Alt_Manager
                 if (!Backup.Exists || (Backup.Exists && (DateTime.Now - Backup.LastWriteTime).TotalMinutes > 60 * 8))
                     File.WriteAllBytes(Backup.FullName, OldInfo);
 
-                if (!PasswordHash.IsEmpty)
-                    File.WriteAllBytes(SaveFilePath, Cryptography.Encrypt(SaveData, ProtectedData.Unprotect(PasswordHash.ToArray(), Array.Empty<byte>(), DataProtectionScope.CurrentUser)));
+                if (passwordHash.Length > 0)
+                    File.WriteAllBytes(SaveFilePath, Cryptography.Encrypt(SaveData, ProtectedData.Unprotect(passwordHash, Array.Empty<byte>(), DataProtectionScope.CurrentUser)));
                 else
                 {
                     if (File.Exists(Path.Combine(Environment.CurrentDirectory, "NoEncryption.IUnderstandTheRisks.iautamor")))
@@ -379,6 +447,7 @@ namespace RBX_Alt_Manager
                     else
                         File.WriteAllBytes(SaveFilePath, ProtectedData.Protect(Encoding.UTF8.GetBytes(SaveData), Entropy, DataProtectionScope.LocalMachine));
                 }
+                writtenRevision = revision;
             }
         }
 
@@ -566,13 +635,16 @@ namespace RBX_Alt_Manager
         public void UpdateAccountView(Account account) =>
             AccountsView.InvokeIfRequired(() => AccountsView.UpdateObject(account));
 
-        public static Account AddAccount(string SecurityToken, string Password = "", string AccountJSON = null)
+        public static Account AddAccount(string SecurityToken, string Password = "", string AccountJSON = null, string ExpectedUsername = null, bool DeferSave = false)
         {
             Account account = new Account(SecurityToken, AccountJSON);
 
+            if (ExpectedUsername != null && !string.Equals(account.Username, ExpectedUsername, StringComparison.OrdinalIgnoreCase))
+                return null;
+
             if (account.Valid)
             {
-                account.Password = Password;
+                account.SetImportedPassword(Password);
 
                 Account exists = AccountsList.AsReadOnly().FirstOrDefault(acc => acc.UserID == account.UserID);
 
@@ -581,19 +653,19 @@ namespace RBX_Alt_Manager
                     account = exists;
 
                     exists.SecurityToken = SecurityToken;
-                    exists.Password = Password;
+                    exists.SetImportedPassword(Password);
                     exists.LastUse = DateTime.Now;
 
-                    Instance.RefreshView(exists);
+                    Instance.AccountsView.RefreshObject(exists);
                 }
                 else
                 {
                     AccountsList.Add(account);
 
-                    Instance.RefreshView(account);
+                    Instance.AccountsView.AddObject(account);
                 }
 
-                SaveAccounts(true);
+                if (!DeferSave) SaveAccounts(true);
 
                 return account;
             }
@@ -633,6 +705,8 @@ namespace RBX_Alt_Manager
 
         private void AccountManager_Load(object sender, EventArgs e)
         {
+            try { GetChromeBridge(); } catch (Exception) { /* Setup remains available from the Add Account menu. */ }
+            _ = Task.Run(() => RobloxWindowMonitor.Run(this));
             PasswordPanel.Dock = DockStyle.Fill;
 
             string AFN = Path.Combine(Directory.GetCurrentDirectory(), "Auto Update.exe");
@@ -817,8 +891,10 @@ namespace RBX_Alt_Manager
                 };
             }
 
-            var PresenceTimer = new System.Timers.Timer(60000 * 2) { Enabled = true };
-            PresenceTimer.Elapsed += (s, e) => AccountsView.InvokeIfRequired(async () => await UpdatePresence());
+            var PresenceTimer = new System.Windows.Forms.Timer { Interval = 60000 * 2 };
+            PresenceTimer.Tick += async (s, e) => await UpdatePresence();
+            FormClosed += (s, e) => { PresenceTimer.Dispose(); PresenceCancellationToken?.Cancel(); AutoCookieRefresh?.Dispose(); };
+            PresenceTimer.Start();
         }
 
         public void ApplyTheme()
@@ -1149,103 +1225,9 @@ namespace RBX_Alt_Manager
         private void AccountManager_Shown(object sender, EventArgs e)
         {
             if (!UpdateMultiRoblox() && !General.Get<bool>("HideRbxAlert"))
-                MessageBox.Show("WARNING: Roblox is currently running, multi roblox will not work until you restart the account manager with roblox closed.", "Roblox Account Manager", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Multi Roblox is not ready. Close all Roblox windows and other multi-instance tools, then restart RAM before launching Roblox.", "Roblox Account Manager", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-            int Major = Environment.OSVersion.Version.Major, Minor = Environment.OSVersion.Version.Minor;
-
-            PuppeteerSupported = !(Major < 6 || (Major == 6 && Minor <= 1));
-
-            if (General.Get<bool>("UseCefSharpBrowser")) PuppeteerSupported = false;
-
-            if (!PuppeteerSupported)
-            {
-                AddAccountsStrip.Items.Remove(bulkUserPassToolStripMenuItem);
-                AddAccountsStrip.Items.Remove(customURLJSToolStripMenuItem);
-                OpenBrowserStrip.Items.Remove(URLJSToolStripMenuItem);
-                OpenBrowserStrip.Items.Remove(joinGroupToolStripMenuItem);
-            }
-
-            if (PuppeteerSupported && (!Directory.Exists(AccountBrowser.Fetcher.DownloadsFolder) || Directory.GetDirectories(AccountBrowser.Fetcher.DownloadsFolder).Length == 0))
-            {
-                Add.Visible = false;
-                Remove.Visible = false;
-                DownloadProgressBar.Visible = true;
-                DLChromiumLabel.Visible = true;
-
-                Task.Run(async () =>
-                {
-                    IsDownloadingChromium = true;
-
-                    void DownloadProgressChanged(object s, DownloadProgressChangedEventArgs e) => DownloadProgressBar.InvokeIfRequired(() => { DownloadProgressBar.Value = e.ProgressPercentage; });
-
-                    AccountBrowser.Fetcher.DownloadProgressChanged += DownloadProgressChanged;
-                    await AccountBrowser.Fetcher.DownloadAsync(BrowserFetcher.DefaultChromiumRevision);
-                    AccountBrowser.Fetcher.DownloadProgressChanged -= DownloadProgressChanged;
-
-                    IsDownloadingChromium = false;
-
-                    this.InvokeIfRequired(() =>
-                    {
-                        Add.Visible = true;
-                        Remove.Visible = true;
-                        DownloadProgressBar.Visible = false;
-                        DLChromiumLabel.Visible = false;
-                    });
-                });
-            }
-            else if (!PuppeteerSupported)
-            {
-                FileInfo Cef = new FileInfo(Path.Combine(Environment.CurrentDirectory, "x86", "CefSharp.dll"));
-
-                if (Cef.Exists)
-                {
-                    FileVersionInfo Info = FileVersionInfo.GetVersionInfo(Cef.FullName);
-
-                    if (Info.ProductMajorPart != 109)
-                        try { Directory.GetParent(Cef.FullName).RecursiveDelete(); } catch { }
-                }
-
-                if (!Directory.Exists(Path.Combine(Environment.CurrentDirectory, "x86")))
-                {
-                    var Existing = new DirectoryInfo(Path.Combine(Environment.CurrentDirectory, "x86"));
-
-                    DLChromiumLabel.Text = "Downloading CefSharp...";
-
-                    Add.Visible = false;
-                    Remove.Visible = false;
-                    DownloadProgressBar.Visible = true;
-                    DLChromiumLabel.Visible = true;
-
-                    Task.Run(async () =>
-                    {
-                        IsDownloadingChromium = true;
-
-                        using HttpClient client = new HttpClient();
-
-                        string FileName = Path.GetTempFileName(), DownloadUrl = Resources.CefSharpDownload;
-
-                        var TotalDownloadSize = (await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, DownloadUrl))).Content.Headers.ContentLength.Value;
-                        Progress<float> progress = new Progress<float>(progress => DownloadProgressBar.InvokeIfRequired(() => DownloadProgressBar.Value = (int)(progress * 100)));
-
-                        using (var file = new FileStream(FileName, FileMode.Create, FileAccess.Write, FileShare.None))
-                            await client.DownloadAsync(DownloadUrl, file, progress);
-
-                        if (Existing.Exists) Existing.RecursiveDelete();
-
-                        System.IO.Compression.ZipFile.ExtractToDirectory(FileName, Environment.CurrentDirectory);
-
-                        IsDownloadingChromium = false;
-
-                        this.InvokeIfRequired(() =>
-                        {
-                            Add.Visible = true;
-                            Remove.Visible = true;
-                            DownloadProgressBar.Visible = false;
-                            DLChromiumLabel.Visible = false;
-                        });
-                    });
-                }
-            }
+            PuppeteerSupported = true; // All browser flows use installed Google Chrome incognito.
 
             if (AccountControl.Get<bool>("StartOnLaunch"))
                 LaunchNexus.PerformClick();
@@ -1253,26 +1235,10 @@ namespace RBX_Alt_Manager
 
         public bool UpdateMultiRoblox()
         {
-            bool Enabled = General.Get<bool>("EnableMultiRbx");
-
-            if (Enabled && rbxMultiMutex == null)
-                try
-                {
-                    rbxMultiMutex = new Mutex(true, "ROBLOX_singletonMutex");
-
-                    if (!rbxMultiMutex.WaitOne(TimeSpan.Zero, true))
-                        return false;
-                }
-                catch { return false; }
-            else if (!Enabled && rbxMultiMutex != null)
-            {
-                rbxMultiMutex.Close();
-                rbxMultiMutex = null;
-            }
-
+            if (General.Get<bool>("EnableMultiRbx")) return MultiRoblox.TryEnable();
+            MultiRoblox.Dispose();
             return true;
         }
-
         private void Remove_Click(object sender, EventArgs e)
         {
             if (AccountsView.SelectedObjects.Count > 1)
@@ -1304,35 +1270,7 @@ namespace RBX_Alt_Manager
             }
         }
 
-        private async void Add_Click(object sender, EventArgs e)
-        {
-            if (PuppeteerSupported)
-            {
-                Add.Enabled = false;
-
-                try { await new AccountBrowser().Login(); }
-                catch (Exception x)
-                {
-                    Program.Logger.Error($"[Add_Click] An error was encountered attempting to login: {x}");
-
-                    if (Utilities.YesNoPrompt($"An error was encountered attempting to login", "You may have a corrupted chromium installation", "Would you like to re-install chromium?", false))
-                    {
-                        MessageBox.Show("Roblox Account Manager will now close since it can't delete the folder while it's in use.", "", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                        if (Directory.GetFiles(AccountBrowser.Fetcher.DownloadsFolder).Length <= 1 && Directory.GetDirectories(AccountBrowser.Fetcher.DownloadsFolder).Length <= 1)
-                            Process.Start("cmd.exe", $"/c rmdir /s /q \"{AccountBrowser.Fetcher.DownloadsFolder}\"");
-                        else
-                            Process.Start("explorer.exe", "/select, " + AccountBrowser.Fetcher.DownloadsFolder);
-
-                        Environment.Exit(0);
-                    }
-                }
-
-                Add.Enabled = true;
-            }
-            else
-                CefBrowser.Instance.Login();
-        }
+        private void Add_Click(object sender, EventArgs e) => OpenLoginBrowser(sender, e);
 
         private void DownloadProgressBar_Click(object sender, EventArgs e)
         {
@@ -1384,38 +1322,153 @@ namespace RBX_Alt_Manager
 
         private void manualToolStripMenuItem_Click(object sender, EventArgs e) => Add.PerformClick();
 
+        private ChromeExtensionBridge GetChromeBridge()
+        {
+            return ChromeBridge ?? (ChromeBridge = new ChromeExtensionBridge(this));
+        }
+
+        private void OpenChromeExtensionSetup()
+        {
+            try { GetChromeBridge().ShowMonitor(); }
+            catch (Exception) { MessageBox.Show("Không khởi động được bộ kết nối. Hãy chép cả thư mục ChromeBridge và ChromeExtension cạnh file .exe.", "Roblox Account Manager"); }
+        }
+
+        private void OpenLoginBrowser(object sender, EventArgs e)
+        {
+            try { GetChromeBridge().Enqueue(null); }
+            catch (Exception) { MessageBox.Show("Không mở được tiện ích. Kiểm tra Google Chrome và bộ kết nối trong thư mục ứng dụng.", "Roblox Account Manager"); }
+        }
         private void addAccountsToolStripMenuItem_Click(object sender, EventArgs e) => Add.PerformClick();
 
         private void byCookieToolStripMenuItem_Click(object sender, EventArgs e)
         {
+            ImportAccountsForm.SetImportMode(false);
             ImportAccountsForm.Show();
             ImportAccountsForm.WindowState = FormWindowState.Normal;
             ImportAccountsForm.BringToFront();
         }
 
-        private async void bulkUserPassToolStripMenuItem_Click(object sender, EventArgs e)
+        private void userPassCookieToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            string Combos = ShowDialog("Separate the accounts with new lines\nMust be in user:pass form", "Import by User:Pass", big: true);
+            ImportAccountsForm.SetImportMode(true);
+            ImportAccountsForm.Show();
+            ImportAccountsForm.WindowState = FormWindowState.Normal;
+            ImportAccountsForm.BringToFront();
+        }
 
-            if (Combos == "/UC") return;
-
-            List<string> ComboList = new List<string>(Combos.Split('\n'));
-
-            var Size = new System.Numerics.Vector2(455, 485);
-            AccountBrowser.CreateGrid(Size);
-
-            for (int i = 0; i < ComboList.Count; i++)
+        internal static string GenerateRandomCombos(int count, string existing = "")
+        {
+            if (count < 1 || count > 1000) throw new ArgumentOutOfRangeException(nameof(count));
+            const string upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", lower = "abcdefghijklmnopqrstuvwxyz", digits = "0123456789", special = "!@#$%^&*_-+=?";
+            string letters = upper + lower, alphanumeric = letters + digits, passwordChars = alphanumeric + special;
+            var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in (existing ?? "").Split('\n'))
             {
-                string Combo = ComboList[i];
+                int colon = line.IndexOf(':');
+                if (colon > 0) used.Add(line.Substring(0, colon).Trim());
+            }
+            var result = new List<string>();
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                var buffer = new byte[1];
+                int Next(int max)
+                {
+                    int limit = 256 - 256 % max;
+                    do { rng.GetBytes(buffer); } while (buffer[0] >= limit);
+                    return buffer[0] % max;
+                }
+                void Shuffle(char[] chars, int start)
+                {
+                    for (int i = chars.Length - 1; i > start; i--)
+                    {
+                        int j = start + Next(i - start + 1);
+                        char temp = chars[i]; chars[i] = chars[j]; chars[j] = temp;
+                    }
+                }
+                while (result.Count < count)
+                {
+                    var user = new char[12];
+                    user[0] = letters[Next(letters.Length)];
+                    user[1] = upper[Next(upper.Length)]; user[2] = lower[Next(lower.Length)]; user[3] = digits[Next(digits.Length)];
+                    for (int i = 4; i < user.Length; i++) user[i] = alphanumeric[Next(alphanumeric.Length)];
+                    Shuffle(user, 1);
+                    string username = new string(user);
+                    if (!used.Add(username)) continue;
+                    var pass = new char[16];
+                    pass[0] = upper[Next(upper.Length)]; pass[1] = lower[Next(lower.Length)]; pass[2] = digits[Next(digits.Length)]; pass[3] = special[Next(special.Length)];
+                    for (int i = 4; i < pass.Length; i++) pass[i] = passwordChars[Next(passwordChars.Length)];
+                    Shuffle(pass, 0);
+                    result.Add(username + ":" + new string(pass));
+                }
+            }
+            return string.Join(Environment.NewLine, result);
+        }
 
-                if (!Combo.Contains(':')) continue;
-
-                var LoginTask = new AccountBrowser() { Index = i, Size = Size }.Login(Combo.Substring(0, Combo.IndexOf(':')), Combo.Substring(Combo.IndexOf(":") + 1));
-
-                if ((i + 1) % 2 == 0) await LoginTask;
+        private void CreateAccountByUserPass()
+        {
+            using (var dialog = new Form { Text = "Create Account (User:Pass)", ClientSize = new Size(480, 515), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false })
+            {
+                var label = new Label { Text = "Mỗi dòng một tài khoản mới: user:pass", Left = 15, Top = 15, Width = 450 };
+                var quantityLabel = new Label { Text = "Số lượng:", Left = 15, Top = 46, Width = 70 };
+                var quantity = new NumericUpDown { Left = 90, Top = 42, Width = 80, Minimum = 1, Maximum = 1000, Value = 1 };
+                var random = new Button { Text = "Random User:Pass", Left = 185, Top = 40, Width = 170, Height = 26 };
+                var combo = new TextBox { Left = 15, Top = 80, Width = 450, Height = 250, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Both, WordWrap = false };
+                random.Click += (s, e) =>
+                {
+                    string generated = GenerateRandomCombos((int)quantity.Value, combo.Text);
+                    if (combo.TextLength > 0 && !combo.Text.EndsWith("\n")) combo.AppendText(Environment.NewLine);
+                    combo.AppendText(generated);
+                };
+                var dateLabel = new Label { Text = "Ngày sinh của bạn:", Left = 15, Top = 348, Width = 150 };
+                var birthday = new DateTimePicker { Left = 170, Top = 344, Width = 295, Format = DateTimePickerFormat.Custom, CustomFormat = "dd/MM/yyyy", ShowCheckBox = true, Checked = false, MinDate = new DateTime(1900, 1, 1), MaxDate = DateTime.Today.AddDays(-1) };
+                var genderLabel = new Label { Text = "Giới tính (tùy chọn):", Left = 15, Top = 388, Width = 150 };
+                var gender = new ComboBox { Left = 170, Top = 384, Width = 295, DropDownStyle = ComboBoxStyle.DropDownList };
+                gender.Items.AddRange(new object[] { "Không chọn", "Nữ", "Nam" });
+                gender.SelectedIndex = 0;
+                if (General.Exists("CreateAccountBirthday") && DateTime.TryParseExact(General.Get("CreateAccountBirthday"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime savedBirthday) && savedBirthday >= birthday.MinDate && savedBirthday <= birthday.MaxDate)
+                {
+                    birthday.Value = savedBirthday;
+                    birthday.Checked = true;
+                }
+                if (General.Exists("CreateAccountGender"))
+                {
+                    string savedGender = General.Get("CreateAccountGender");
+                    gender.SelectedIndex = savedGender == "female" ? 1 : savedGender == "male" ? 2 : 0;
+                }
+                dialog.FormClosing += (s, e) =>
+                {
+                    try
+                    {
+                        General.Set("CreateAccountBirthday", birthday.Checked ? birthday.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "");
+                        General.Set("CreateAccountGender", gender.SelectedIndex == 1 ? "female" : gender.SelectedIndex == 2 ? "male" : "");
+                        IniSettings.Save("RAMSettings.ini");
+                    }
+                    catch (Exception) { MessageBox.Show(dialog, "Không lưu được lựa chọn ngày sinh/giới tính. Kiểm tra quyền ghi RAMSettings.ini."); }
+                };
+                var info = new Label { Text = "Ngày sinh và giới tính áp dụng cho tất cả các dòng. Chrome xử lý lần lượt; hoàn tất xác minh nếu được yêu cầu. RAM tự lưu khi thành công.", Left = 15, Top = 420, Width = 450, Height = 40 };
+                var create = new Button { Text = "Tạo tài khoản", Left = 325, Top = 475, Width = 140 };
+                create.Click += (s, e) =>
+                {
+                    if (!birthday.Checked) { MessageBox.Show(dialog, "Hãy chọn và xác nhận ngày sinh của bạn."); return; }
+                    try { GetChromeBridge().Enqueue(combo.Text, birthday.Value.Date, gender.SelectedIndex == 1 ? "female" : gender.SelectedIndex == 2 ? "male" : ""); dialog.DialogResult = DialogResult.OK; }
+                    catch (ArgumentException error) { MessageBox.Show(dialog, error.Message); }
+                    catch (Exception) { MessageBox.Show(dialog, "Không kết nối được Chrome. Mở Add Account → Chrome Extension để kiểm tra."); }
+                };
+                dialog.Controls.AddRange(new Control[] { label, quantityLabel, quantity, random, combo, dateLabel, birthday, genderLabel, gender, info, create });
+                dialog.AcceptButton = create;
+                dialog.ShowDialog(this);
+                combo.Clear();
             }
         }
 
+        private void bulkUserPassToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            string combos = ShowDialog("Mỗi dòng một user:pass. Tiện ích sẽ mở Chrome ẩn danh, tự đăng nhập và lưu tài khoản lần lượt. CAPTCHA/2FA cần bạn xử lý.", "Import by User:Pass", big: true);
+            if (combos == "/UC" || string.IsNullOrWhiteSpace(combos)) return;
+            try { GetChromeBridge().Enqueue(combos); }
+            catch (ArgumentException error) { MessageBox.Show(error.Message, "Roblox Account Manager"); }
+            catch (Exception) { MessageBox.Show("Không mở được tiện ích. Chọn Add Account → Chrome Extension để xem hướng dẫn cài.", "Roblox Account Manager"); }
+        }
         private void AccountsView_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (AccountsView.SelectedItems.Count != 1)
@@ -1445,22 +1498,31 @@ namespace RBX_Alt_Manager
 
         private void SetAlias_Click(object sender, EventArgs e)
         {
-            foreach (Account account in AccountsView.SelectedObjects)
-                account.Alias = Alias.Text;
-
-            RefreshView();
+            var selected = AccountsView.SelectedObjects.Cast<Account>().ToArray();
+            if (selected.Length == 0) return;
+            string value = Alias.Text;
+            foreach (Account account in selected) account.Alias = value;
+            AccountsView.RefreshObjects(selected);
+            SaveAccounts(true);
         }
 
         private void SetDescription_Click(object sender, EventArgs e)
         {
-            foreach (Account account in AccountsView.SelectedObjects)
-                account.Description = DescriptionBox.Text;
-
-            RefreshView();
+            var selected = AccountsView.SelectedObjects.Cast<Account>().ToArray();
+            if (selected.Length == 0) return;
+            string value = DescriptionBox.Text;
+            foreach (Account account in selected) account.Description = value;
+            AccountsView.RefreshObjects(selected);
+            SaveAccounts(true);
         }
 
         private void JoinServer_Click(object sender, EventArgs e)
         {
+            if (General.Get<bool>("EnableMultiRbx") && !UpdateMultiRoblox())
+            {
+                MessageBox.Show("Multi Roblox is not ready. Close all Roblox windows and other multi-instance tools, then restart RAM before joining.", "Roblox Account Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             Match IDMatch = Regex.Match(PlaceID.Text, @"\/games\/(\d+)[\/|\?]?"); // idiotproofing
 
             if (PlaceID.Text.Contains("privateServerLinkCode") && IDMatch.Success)
@@ -1626,7 +1688,7 @@ namespace RBX_Alt_Manager
             if (SelectedAccount != null)
             {
                 if (SelectedAccount.GetAuthTicket(out string STicket))
-                    Clipboard.SetText(STicket);
+                    CopyTextToClipboard(STicket);
 
                 return;
             }
@@ -1642,7 +1704,7 @@ namespace RBX_Alt_Manager
             }
 
             if (Tickets.Count > 0)
-                Clipboard.SetText(string.Join("\n", Tickets));
+                CopyTextToClipboard(string.Join("\n", Tickets));
         }
 
         private void copyRbxplayerLinkToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1655,7 +1717,7 @@ namespace RBX_Alt_Manager
                 double LaunchTime = Math.Floor((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds * 1000);
 
                 Random r = new Random();
-                Clipboard.SetText(string.Format("<roblox-player://1/1+launchmode:play+gameinfo:{0}+launchtime:{4}+browsertrackerid:{5}+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame{3}&placeId={1}{2}+robloxLocale:en_us+gameLocale:en_us>", Ticket, PlaceID.Text, HasJobId ? "" : ("&gameId=" + JobID.Text), HasJobId ? "" : "Job", LaunchTime, r.Next(100000, 130000).ToString() + r.Next(100000, 900000).ToString()));
+                CopyTextToClipboard(string.Format("<roblox-player://1/1+launchmode:play+gameinfo:{0}+launchtime:{4}+browsertrackerid:{5}+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame{3}&placeId={1}{2}+robloxLocale:en_us+gameLocale:en_us>", Ticket, PlaceID.Text, HasJobId ? "" : ("&gameId=" + JobID.Text), HasJobId ? "" : "Job", LaunchTime, r.Next(100000, 130000).ToString() + r.Next(100000, 900000).ToString()));
             }
         }
 
@@ -1668,6 +1730,38 @@ namespace RBX_Alt_Manager
                     afform.ShowForm();
         }
 
+        internal static bool TryWriteClipboard(string text, Action<string> write, Action retryDelay)
+        {
+            if (string.IsNullOrEmpty(text)) return true;
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                try
+                {
+                    write(text);
+                    return true;
+                }
+                catch (ExternalException)
+                {
+                    if (attempt < 9) retryDelay();
+                }
+            }
+            return false;
+        }
+
+        private void CopyTextToClipboard(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            bool copied = TryWriteClipboard(text, value =>
+            {
+                var data = new DataObject();
+                data.SetText(value, TextDataFormat.UnicodeText);
+                Clipboard.SetDataObject(data, true, 0, 0);
+            }, () => Thread.Sleep(100));
+
+            if (!copied)
+                MessageBox.Show(this, "Clipboard is busy. Please try copying again in a moment.", "Roblox Account Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         private void copySecurityTokenToolStripMenuItem_Click(object sender, EventArgs e)
         {
             List<string> Tokens = new List<string>();
@@ -1675,7 +1769,7 @@ namespace RBX_Alt_Manager
             foreach (Account account in AccountsView.SelectedObjects)
                 Tokens.Add(account.SecurityToken);
 
-            Clipboard.SetText(string.Join("\n", Tokens));
+            CopyTextToClipboard(string.Join("\n", Tokens));
         }
 
         private void copyUsernameToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1685,7 +1779,7 @@ namespace RBX_Alt_Manager
             foreach (Account account in AccountsView.SelectedObjects)
                 Usernames.Add(account.Username);
 
-            Clipboard.SetText(string.Join("\n", Usernames));
+            CopyTextToClipboard(string.Join("\n", Usernames));
         }
 
         private void copyPasswordToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1695,7 +1789,7 @@ namespace RBX_Alt_Manager
             foreach (Account account in AccountsView.SelectedObjects)
                 Passwords.Add($"{account.Password}");
 
-            Clipboard.SetText(string.Join("\n", Passwords));
+            CopyTextToClipboard(string.Join("\n", Passwords));
         }
 
         private void copyUserPassComboToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1705,7 +1799,18 @@ namespace RBX_Alt_Manager
             foreach (Account account in AccountsView.SelectedObjects)
                 Combos.Add($"{account.Username}:{account.Password}");
 
-            Clipboard.SetText(string.Join("\n", Combos));
+            CopyTextToClipboard(string.Join("\n", Combos));
+        }
+
+        private void copyUserPassCookieToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            List<string> Combos = new List<string>();
+
+            foreach (Account account in AccountsView.SelectedObjects)
+                Combos.Add($"{account.Username}:{account.Password}:{account.SecurityToken}");
+
+            if (Combos.Count > 0)
+                CopyTextToClipboard(string.Join("\n", Combos));
         }
 
         private void copyUserIdToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1715,7 +1820,7 @@ namespace RBX_Alt_Manager
             foreach (Account account in AccountsView.SelectedObjects)
                 UserIds.Add(account.UserID.ToString());
 
-            Clipboard.SetText(string.Join("\n", UserIds));
+            CopyTextToClipboard(string.Join("\n", UserIds));
         }
 
         private void PlaceID_TextChanged(object sender, EventArgs e)
@@ -1759,7 +1864,7 @@ namespace RBX_Alt_Manager
             SaveAccounts();
         }
 
-        private void copyGroupToolStripMenuItem_Click(object sender, EventArgs e) => Clipboard.SetText(SelectedAccount?.Group ?? "No Account Selected");
+        private void copyGroupToolStripMenuItem_Click(object sender, EventArgs e) => CopyTextToClipboard(SelectedAccount?.Group ?? "No Account Selected");
 
         private void copyAppLinkToolStripMenuItem_Click(object sender, EventArgs e)
         {
@@ -1770,7 +1875,7 @@ namespace RBX_Alt_Manager
                 double LaunchTime = Math.Floor((DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds * 1000);
 
                 Random r = new Random();
-                Clipboard.SetText(string.Format("<roblox-player://1/1+launchmode:app+gameinfo:{0}+launchtime:{1}+browsertrackerid:{2}+robloxLocale:en_us+gameLocale:en_us>", Ticket, LaunchTime, r.Next(500000, 600000).ToString() + r.Next(10000, 90000).ToString()));
+                CopyTextToClipboard(string.Format("<roblox-player://1/1+launchmode:app+gameinfo:{0}+launchtime:{1}+browsertrackerid:{2}+robloxLocale:en_us+gameLocale:en_us>", Ticket, LaunchTime, r.Next(500000, 600000).ToString() + r.Next(10000, 90000).ToString()));
             }
         }
 
@@ -1849,7 +1954,7 @@ namespace RBX_Alt_Manager
             foreach (Account account in AccountsView.SelectedObjects)
                 Profiles.Add($"https://www.roblox.com/users/{account.UserID}/profile");
 
-            Clipboard.SetText(string.Join("\n", Profiles));
+            CopyTextToClipboard(string.Join("\n", Profiles));
         }
 
         private void viewFieldsToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1932,7 +2037,7 @@ namespace RBX_Alt_Manager
             {
                 AccountsList = AccountsList.OrderByDescending(x => x.Username.All(char.IsDigit)).ThenByDescending(x => x.Username.Any(char.IsLetter)).ThenBy(x => x.Username).ToList();
 
-                AccountsView.SetObjects(AccountsList);
+                AccountsView.SetObjects(AccountsList.ToArray());
                 AccountsView.BuildGroups();
             }
         }
@@ -2131,28 +2236,29 @@ namespace RBX_Alt_Manager
 
         CancellationTokenSource PresenceCancellationToken;
 
-        private void AccountsView_Scroll(object sender, ScrollEventArgs e)
+        private async void AccountsView_Scroll(object sender, ScrollEventArgs e)
         {
-            if (PresenceCancellationToken != null || !General.Get<bool>("ShowPresence"))
-                PresenceCancellationToken.Cancel();
-
-            PresenceCancellationToken = new CancellationTokenSource();
-            var Token = PresenceCancellationToken.Token;
-
-            Task.Run(async () =>
+            PresenceCancellationToken?.Cancel();
+            if (!General.Get<bool>("ShowPresence") || IsDisposed || Disposing) return;
+            var pending = new CancellationTokenSource();
+            PresenceCancellationToken = pending;
+            try
             {
-                await Task.Delay(3500); // Wait until the user has stopped scrolling before updating account presence
-
-                if (Token.IsCancellationRequested)
-                    return;
-
-                AccountsView.InvokeIfRequired(async () => await UpdatePresence());
-            }, PresenceCancellationToken.Token);
+                await Task.Delay(3500, pending.Token);
+                if (!pending.IsCancellationRequested) await UpdatePresence();
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error) { Program.Logger.Error("Presence scroll failed: " + error.GetType().FullName); }
+            finally
+            {
+                if (ReferenceEquals(PresenceCancellationToken, pending)) PresenceCancellationToken = null;
+                pending.Dispose();
+            }
         }
 
         private async Task UpdatePresence()
         {
-            if (!General.Get<bool>("ShowPresence")) return;
+            if (IsDisposed || Disposing || AccountsView.IsDisposed || !AccountsView.IsHandleCreated || !General.Get<bool>("ShowPresence")) return;
 
             List<Account> VisibleAccounts = new List<Account>();
 

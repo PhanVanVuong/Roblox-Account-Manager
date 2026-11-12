@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "RAM Login Helper",
+  "version": "1.0.9",
+  "description": "Dang nhap Roblox bang Chrome an danh va luu tai khoan vao ung dung RAM tren may.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqTDykKNo3IiPLc+6GvMsE7uO1c/6zXgE4CqhQvxS3DUbn2QgyxR9ubk7du+QWknBPN64DwdatRs4e8JdpNO3DEtehBN7LoUkTytq4Gd21alSFl72o/ph80Z/iaMSlRnVCzATscHnqbylwgbvH0N3pO9duVa/VxoKJTD/zDEGkn9NRmMfHgWcNR6x8nUPONNdfzIfsqLDeQ5R02Q8GvIWCDRJXmt4JAc1kg8liHlXGgADey8+puHe7cxe3NyHX7HVCZ1KK/913qrkxp9hkbyfp9RDkaDyrSLgk5IDkZQtxEawQ2fL8xierzu8vGf+pf20LlhanoMgzz/SH05ApM3zbQIDAQAB",
+  "minimum_chrome_version": "116",
+  "incognito": "spanning",
+  "permissions": [
+    "nativeMessaging",
+    "cookies",
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://www.roblox.com/*",
+    "https://roblox.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

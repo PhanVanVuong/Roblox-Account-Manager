@@ -1,8 +1,8 @@
 ﻿using CefSharp;
 using CefSharp.WinForms;
 using Newtonsoft.Json.Linq;
-using PuppeteerExtraSharp;
-using PuppeteerExtraSharp.Plugins.ExtraStealth;
+
+
 using PuppeteerSharp;
 using System;
 using System.Collections.Generic;
@@ -23,6 +23,17 @@ namespace RBX_Alt_Manager.Classes
     internal class AccountBrowser
     {
         public static BrowserFetcher Fetcher = new BrowserFetcher(Product.Chrome);
+
+        internal static string FindChromeExecutable()
+        {
+            foreach (string root in new[] { Environment.GetEnvironmentVariable("ProgramW6432"), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) })
+            {
+                if (string.IsNullOrEmpty(root)) continue;
+                string path = Path.Combine(root, "Google", "Chrome", "Application", "chrome.exe");
+                if (File.Exists(path)) return path;
+            }
+            throw new FileNotFoundException("Google Chrome is not installed. Install Google Chrome to use incognito login.");
+        }
 
         private static Dictionary<int, Vector2> ScreenGrid;
 
@@ -52,16 +63,18 @@ namespace RBX_Alt_Manager.Classes
             }));
         }
 
-        public async Task LaunchBrowser(string Url = "https://roblox.com/", Func<Task> PostPageCreation = null, Func<Page, Task> PostNavigation = null, string Script = null, string[] Arguments = null)
+        public async Task LaunchBrowser(string Url = "https://roblox.com/", Func<Task> PostPageCreation = null, Func<Page, Task> PostNavigation = null, string Script = null, string[] Arguments = null, bool Incognito = false)
         {
+            string ChromePath = FindChromeExecutable();
+            Incognito = true;
             if (string.IsNullOrEmpty(Url)) Url = "https://roblox.com/";
 
             if (Position != null && Index >= 0 && ScreenGrid != null && ScreenGrid.Count > 0)
-                Position = ScreenGrid[Index % (ScreenGrid.Count - 1)];
+                Position = ScreenGrid[Index % ScreenGrid.Count];
             else
                 Position = new Vector2(Screen.PrimaryScreen.WorkingArea.Width / 2 - (Size.X / 2), Screen.PrimaryScreen.WorkingArea.Height / 2 - (Size.Y / 2));
 
-            List<string> Args = new List<string>(Arguments ?? new string[] { "--disable-web-security" });
+            List<string> Args = new List<string>(Arguments ?? Array.Empty<string>());
 
             string ExtensionPath = Path.Combine(Environment.CurrentDirectory, "extension");
             string ConfigPath = Path.Combine(Environment.CurrentDirectory, "BrowserConfig.json");
@@ -138,16 +151,28 @@ namespace RBX_Alt_Manager.Classes
                 }
             }
 
-            var Options = new LaunchOptions { Headless = false, DefaultViewport = null, Args = Args.ToArray(), IgnoreHTTPSErrors = true };
+            Args.AddRange(new[] { "--incognito", "--new-window", "--lang=vi", "--accept-lang=vi-VN,vi,en-US,en" });
+            var Options = new LaunchOptions
+            {
+                ExecutablePath = ChromePath,
+                Headless = false,
+                DefaultViewport = null,
+                Args = Args.ToArray(),
+                IgnoredDefaultArgs = new[] { "--enable-automation" }
+            };
 
-            await Fetcher.DownloadAsync(BrowserFetcher.DefaultChromiumRevision);
-
-            browser = (Browser)await new PuppeteerExtra().Use(new StealthPlugin()).LaunchAsync(Options);
-            page = (Page)(await browser.PagesAsync())[0];
-
+            browser = (Browser)await Puppeteer.LaunchAsync(Options);
+            // Use Chrome's own startup incognito window instead of a CDP-created window.
+            page = (Page)(await browser.PagesAsync()).FirstOrDefault();
+            if (page == null) throw new InvalidOperationException("Chrome did not open an incognito tab.");
+            page.Close += async (sender, args) =>
+            {
+                Password = null;
+                try { await browser.CloseAsync(); }
+                catch (Exception) { /* The browser may already be closing. */ }
+            };
             if (Proxy != null) browser.Disconnected += (s, e) => Proxy.Dispose();
 
-            await page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36");
 
             if (Config?.PreNavigateActions != null)
                 foreach (var action in Config.PreNavigateActions)
@@ -164,39 +189,54 @@ namespace RBX_Alt_Manager.Classes
 
             if (PostPageCreation != null) try { await PostPageCreation(); } catch { }
 
-            try { await page.GoToAsync(Url, new NavigationOptions { Referer = "https://google.com/", Timeout = 300000 }); } catch { }
+            await page.GoToAsync(Url, new NavigationOptions { Timeout = 45000, WaitUntil = new[] { WaitUntilNavigation.DOMContentLoaded } });
 
             if (!string.IsNullOrEmpty(Script)) await page.EvaluateExpressionAsync(Script);
 
-            page.FrameAttached += Page_FrameAttached;
 
-            if (PostNavigation != null) try { await PostNavigation(page); } catch { }
+
+            if (PostNavigation != null) await PostNavigation(page);
 
             if (Config?.PostNavigateScripts != null)
                 foreach (var script in Config.PostNavigateScripts)
                     await page.EvaluateExpressionAsync(script);
         }
 
-        public async Task Login(string Username = "", string Password = "", string[] Arguments = null) => await LaunchBrowser("https://roblox.com/login", Arguments: Arguments, PostNavigation: async (page) => await LoginTask(page, Username, Password));
+        public async Task Login(string Username = "", string Password = "", string[] Arguments = null, bool Incognito = false) => await LaunchBrowser("https://www.roblox.com/vi/login", Arguments: Arguments, Incognito: Incognito, PostNavigation: async (page) => await LoginTask(page, Username, Password));
 
         public async Task LoginTask(Page page, string Username = "", string Password = "")
         {
+            this.Password = Password;
             page.RequestFinished += Page_RequestFinished;
-
-            await page.EvaluateExpressionAsync(@"document.body.classList.remove(""light-theme"");document.body.classList.add(""dark-theme"");");
-
-            try
+            if (!string.IsNullOrEmpty(Username))
             {
-                if (!string.IsNullOrEmpty(Username) && await page.WaitForSelectorAsync("#login-username", new WaitForSelectorOptions() { Timeout = 5000 }) != null)
-                    await page.TypeAsync("#login-username", Username);
-                if (!string.IsNullOrEmpty(Password) && await page.WaitForSelectorAsync("#login-password", new WaitForSelectorOptions() { Timeout = 5000 }) != null)
-                    await page.TypeAsync("#login-password", Password);
-
-                if (!string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password)) await page.ClickAsync("#login-button");
+                await page.WaitForSelectorAsync("#login-username", new WaitForSelectorOptions { Visible = true, Timeout = 30000 });
+                await page.TypeAsync("#login-username", Username);
             }
-            catch (Exception ex) { Program.Logger.Error($"An exception was caught while trying to automatically log in: {ex}"); }
+            if (!string.IsNullOrEmpty(Password))
+            {
+                await page.WaitForSelectorAsync("#login-password", new WaitForSelectorOptions { Visible = true, Timeout = 30000 });
+                await page.TypeAsync("#login-password", Password);
+            }
+            _ = WatchLoginCookie();
+            if (!string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password))
+                await page.ClickAsync("#login-button");
         }
 
+        private bool SavingAccount;
+        private async Task WatchLoginCookie()
+        {
+            while (browser.IsConnected && !page.IsClosed)
+            {
+                try
+                {
+                    var cookie = (await page.GetCookiesAsync("https://www.roblox.com/")).FirstOrDefault(c => c.Name == ".ROBLOSECURITY");
+                    if (cookie != null) await AddAccount(cookie);
+                }
+                catch (Exception) { /* Navigation or closing a tab can interrupt the check. */ }
+                await Task.Delay(1500);
+            }
+        }
         private async void Page_FrameAttached(object sender, FrameEventArgs e)
         {
             if (!AccountManager.General.Exists("NopechaKey")) return;
@@ -300,40 +340,33 @@ namespace RBX_Alt_Manager.Classes
             }
         }
 
-        private async void Page_RequestFinished(object sender, RequestEventArgs e)
+        private void Page_RequestFinished(object sender, RequestEventArgs e)
         {
-            Uri Url = new Uri(e.Request.Url);
-
-            if (e.Request.Response.Status == HttpStatusCode.OK && e.Request.Method == HttpMethod.Post && Url.Host == "auth.roblox.com")
+            try
             {
-                if ((Url.AbsolutePath == "/v2/login" || Url.AbsolutePath == "/v2/signup") && e.Request.PostData != null && Utilities.TryParseJson((string)e.Request.PostData, out JObject LoginData))
-                {
-                    if (LoginData?["password"]?.Value<string>() is string password && !string.IsNullOrEmpty(password) && LoginData?["ctype"].Value<string>() is string loginType && loginType.ToLowerInvariant() == "username")
-                        Password = password;
-
-                    if ((await page.GetCookiesAsync("https://roblox.com/")).FirstOrDefault(Cookie => Cookie.Name == ".ROBLOSECURITY") is CookieParam Cookie)
-                        await AddAccount(Cookie);
-                }
-                else if (Regex.IsMatch(Url.AbsolutePath, "/users/[0-9]+/two-step-verification/login") && (await page.GetCookiesAsync("https://roblox.com/")).FirstOrDefault(Cookie => Cookie.Name == ".ROBLOSECURITY") is CookieParam Cookie)
-                    await AddAccount(Cookie);
+                var url = new Uri(e.Request.Url);
+                if (e.Request.Method != HttpMethod.Post || url.Host != "auth.roblox.com" ||
+                    (url.AbsolutePath != "/v2/login" && url.AbsolutePath != "/v2/signup")) return;
+                if (e.Request.PostData != null && Utilities.TryParseJson((string)e.Request.PostData, out JObject loginData) &&
+                    loginData?["password"]?.Value<string>() is string password && !string.IsNullOrEmpty(password))
+                    Password = password;
             }
+            catch (Exception) { /* Ignore requests interrupted by navigation or browser shutdown. */ }
         }
-
         private async Task AddAccount(CookieParam SecurityToken)
         {
-            if (Proxy == null)
-                AccountManager.AddAccount(SecurityToken.Value, Password);
-            else
+            if (SavingAccount) return;
+            SavingAccount = true;
+            try
             {
-                await page.WaitForNavigationAsync();
-                AccountManager.AddAccount(SecurityToken.Value, Password, await page.EvaluateFunctionAsync<string>("() => { return fetch('/my/account/json').then(x=>x.text()); }"));
+                string accountJson = Proxy == null ? null : await page.EvaluateFunctionAsync<string>("() => fetch('https://www.roblox.com/my/account/json').then(x => x.text())");
+                Account saved = AccountManager.AddAccount(SecurityToken.Value, Password, accountJson);
+                if (saved == null) return;
+                Password = null;
+                await browser.CloseAsync();
             }
-
-            Password = null;
-
-            await browser.DisposeAsync();
+            finally { SavingAccount = false; }
         }
-
         public static void CreateGrid(Vector2 Size)
         {
             ScreenGrid = new Dictionary<int, Vector2>();
@@ -389,7 +422,7 @@ namespace RBX_Alt_Manager.Classes
             
             BrowserMode = false;
 
-            browser.Load("https://roblox.com/login");
+            browser.Load("https://www.roblox.com/vi/login");
 
             Show();
         }

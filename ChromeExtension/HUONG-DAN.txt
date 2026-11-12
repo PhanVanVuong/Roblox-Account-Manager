@@ -1,0 +1,62 @@
+RAM LOGIN HELPER — CÀI MỘT LẦN
+
+1. Mở Roblox Account Manager.exe trong thư mục này.
+2. Chọn Add Account → Chrome Extension... để đăng ký bộ kết nối trên Windows.
+   Nếu cần, có thể chạy ChromeBridge\Install.cmd thay cho bước này.
+3. Trong đúng hồ sơ Google Chrome bạn muốn sử dụng, mở chrome://extensions.
+4. Bật Chế độ dành cho nhà phát triển (Developer mode).
+5. Chọn Tải tiện ích đã giải nén (Load unpacked) và chọn thư mục ChromeExtension.
+6. Mở Chi tiết (Details) của RAM Login Helper và bật Cho phép ở chế độ ẩn danh.
+7. Sau khi cài xong, mở RAM. Ứng dụng và tiện ích tự kết nối trong nền, không cần
+   bấm Kết nối mỗi lần. Khi cập nhật tiện ích đã giải nén, bấm nút Tải lại tại
+   chrome://extensions một lần để Chrome nạp mã mới.
+
+SỬ DỤNG
+
+- Mở RAM sẽ tự khởi động bộ kết nối. Nếu Chrome chưa chạy, ứng dụng khởi động Chrome
+  trong nền; không bật tab tiện ích hoặc cửa sổ hướng dẫn.
+- Nếu mất kết nối, tiện ích tự kết nối lại. Chrome Extension... chỉ hiển thị khi
+  bạn chủ động chọn để xem trạng thái, cài đặt hoặc hủy hàng đợi.
+
+- Chọn Add Account → User:Pass, nhập mỗi tài khoản một dòng, ví dụ user:password.
+- Tiện ích tự mở cửa sổ ẩn danh của Chrome cá nhân, điền, bấm đăng nhập và chờ cookie.
+- Nếu có CAPTCHA hoặc xác minh hai bước, tự hoàn tất trong cửa sổ Chrome.
+- Ứng dụng xác thực cookie với Roblox và kiểm tra username trước khi lưu Username,
+  Password, SecurityToken vào AccountData.json. Tài khoản trùng sẽ được cập nhật.
+- Sau khi lưu thành công, chỉ cửa sổ do tiện ích tạo được đóng; tài khoản tiếp theo
+  được xử lý. Không dùng Puppeteer trong luồng thêm tài khoản này.
+- Manual Login cũng dùng tiện ích; nhập thông tin trong cửa sổ mới mở.
+- Nút Bỏ qua trong tiện ích bỏ qua tài khoản hiện tại. Hủy hàng đợi trong ứng dụng
+  dừng toàn bộ tài khoản chưa lưu.
+
+LƯU Ý VỀ PHIÊN ẨN DANH
+
+- Các tab/cửa sổ ẩn danh cùng hồ sơ dùng chung cookie. Hãy đóng các cửa sổ ẩn danh
+  khác trước khi bắt đầu và không mở thêm tab ẩn danh trong khi nhập tài khoản.
+- Tiện ích sẽ chờ nếu có cửa sổ/tab ẩn danh khác, không đóng chúng hoặc xóa cookie
+  của phiên cá nhân đang có.
+- Không đóng ứng dụng trong khi tiện ích đang làm việc. Nếu Chrome bị đóng giữa
+  chừng, mở lại; nếu báo phiên khác đang xử lý, hủy hàng đợi rồi nhập lại.
+- Sai mật khẩu/CAPTCHA có thể khiến trang chờ bạn xử lý hoặc chọn Bỏ qua.
+- Nếu liên kết tiện ích không mở được, kiểm tra đã cài tiện ích vào đúng hồ sơ
+  Chrome đang sử dụng, rồi mở tiện ích từ nút Tiện ích trên thanh công cụ Chrome.
+
+DỮ LIỆU VÀ CHUYỂN MÁY
+
+- Không lưu username/password/cookie vào chrome.storage hoặc log của tiện ích.
+  Chrome chỉ lưu tạm mã tác vụ và mã tab/cửa sổ trong storage.session.
+- Cookie chỉ đọc từ kho cookie của tab ẩn danh do tiện ích tạo. Kết nối tới ứng dụng
+  là Native Messaging trên máy; xác thực tài khoản chỉ gửi cookie tới Roblox.
+- AccountData.json vẫn theo chế độ mã hóa/không mã hóa hiện tại của ứng dụng.
+- Chuyển máy: chép cả thư mục ứng dụng, mở Add Account → Chrome Extension... hoặc
+  chạy ChromeBridge\Install.cmd, rồi cài lại tiện ích và bật quyền ẩn danh trên máy mới.
+- Di chuyển thư mục trên cùng máy: đăng ký lại bộ kết nối và tải lại tiện ích từ vị trí mới.
+- Để gỡ: xóa RAM Login Helper tại chrome://extensions, chạy ChromeBridge\Uninstall.ps1
+  nếu không dùng kết nối nữa. Thao tác gỡ không xóa dữ liệu tài khoản.
+
+GIỚI HẠN KIỂM THỬ
+
+Bản này đã kiểm tra bằng dữ liệu giả: tự điền/bấm nút, chọn đúng kho cookie ẩn danh,
+hàng đợi, hủy/bỏ qua, xác minh username, lưu/cập nhật JSON, truyền tin Native Messaging.
+Chưa kiểm thử đăng nhập toàn trình bằng tài khoản Roblox thật. Giao diện đăng nhập
+Roblox thay đổi có thể yêu cầu cập nhật tiện ích.

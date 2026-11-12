@@ -37,6 +37,7 @@ namespace RBX_Alt_Manager
             this.manualToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.bulkUserPassToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.byCookieToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.userPassCookieToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.customURLJSToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.Remove = new System.Windows.Forms.Button();
             this.JoinServer = new System.Windows.Forms.Button();
@@ -52,6 +53,7 @@ namespace RBX_Alt_Manager
             this.copyUsernameToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.copyPasswordToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.copyUserPassComboToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.copyUserPassCookieToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.copyProfileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.copyUserIdToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.sortAlphabeticallyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -147,6 +149,7 @@ namespace RBX_Alt_Manager
             this.manualToolStripMenuItem,
             this.bulkUserPassToolStripMenuItem,
             this.byCookieToolStripMenuItem,
+            this.userPassCookieToolStripMenuItem,
             this.customURLJSToolStripMenuItem});
             this.AddAccountsStrip.Name = "AddAccountsStrip";
             this.AddAccountsStrip.Size = new System.Drawing.Size(173, 92);
@@ -158,6 +161,7 @@ namespace RBX_Alt_Manager
             this.manualToolStripMenuItem.Text = "Manual Login";
             this.manualToolStripMenuItem.Click += new System.EventHandler(this.manualToolStripMenuItem_Click);
             // 
+            //
             // bulkUserPassToolStripMenuItem
             // 
             this.bulkUserPassToolStripMenuItem.Name = "bulkUserPassToolStripMenuItem";
@@ -172,6 +176,12 @@ namespace RBX_Alt_Manager
             this.byCookieToolStripMenuItem.Text = "Cookie(s)";
             this.byCookieToolStripMenuItem.Click += new System.EventHandler(this.byCookieToolStripMenuItem_Click);
             // 
+            // userPassCookieToolStripMenuItem
+            //
+            this.userPassCookieToolStripMenuItem.Name = "userPassCookieToolStripMenuItem";
+            this.userPassCookieToolStripMenuItem.Text = "User:Pass:Cookie";
+            this.userPassCookieToolStripMenuItem.Click += new System.EventHandler(this.userPassCookieToolStripMenuItem_Click);
+            //
             // customURLJSToolStripMenuItem
             // 
             this.customURLJSToolStripMenuItem.Name = "customURLJSToolStripMenuItem";
@@ -296,6 +306,7 @@ namespace RBX_Alt_Manager
             this.copyUsernameToolStripMenuItem,
             this.copyPasswordToolStripMenuItem,
             this.copyUserPassComboToolStripMenuItem,
+            this.copyUserPassCookieToolStripMenuItem,
             this.copyProfileToolStripMenuItem,
             this.copyUserIdToolStripMenuItem});
             this.copyToolStripMenuItem.Name = "copyToolStripMenuItem";
@@ -323,6 +334,13 @@ namespace RBX_Alt_Manager
             this.copyUserPassComboToolStripMenuItem.Text = "Copy User Pass Combo";
             this.copyUserPassComboToolStripMenuItem.Click += new System.EventHandler(this.copyUserPassComboToolStripMenuItem_Click);
             // 
+            // copyUserPassCookieToolStripMenuItem
+            //
+            this.copyUserPassCookieToolStripMenuItem.Name = "copyUserPassCookieToolStripMenuItem";
+            this.copyUserPassCookieToolStripMenuItem.Size = new System.Drawing.Size(220, 22);
+            this.copyUserPassCookieToolStripMenuItem.Text = "Copy User:Pass:Cookie";
+            this.copyUserPassCookieToolStripMenuItem.Click += new System.EventHandler(this.copyUserPassCookieToolStripMenuItem_Click);
+            //
             // copyProfileToolStripMenuItem
             // 
             this.copyProfileToolStripMenuItem.Name = "copyProfileToolStripMenuItem";
@@ -1172,12 +1190,14 @@ namespace RBX_Alt_Manager
         private BrightIdeasSoftware.OLVColumn LastUsedColumn;
         private System.Windows.Forms.ToolStripMenuItem copyGroupToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem copyUserPassComboToolStripMenuItem;
+        private System.Windows.Forms.ToolStripMenuItem copyUserPassCookieToolStripMenuItem;
         private System.Windows.Forms.PictureBox ShuffleIcon;
         private System.Windows.Forms.ToolStripMenuItem ShowDetailsToolStripMenuItem;
         private System.Windows.Forms.ContextMenuStrip AddAccountsStrip;
         private System.Windows.Forms.ToolStripMenuItem manualToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem bulkUserPassToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem byCookieToolStripMenuItem;
+        private System.Windows.Forms.ToolStripMenuItem userPassCookieToolStripMenuItem;
         private System.Windows.Forms.ContextMenuStrip OpenBrowserStrip;
         private System.Windows.Forms.ToolStripMenuItem customURLToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem URLJSToolStripMenuItem;

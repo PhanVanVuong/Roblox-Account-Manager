@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RBX_Alt_Manager.Classes;
 using RBX_Alt_Manager.Forms;
@@ -87,6 +87,10 @@ namespace RBX_Alt_Manager
         }
 
         public Account() { }
+        internal void SetImportedPassword(string password)
+        {
+            if (password != null && password.Length <= 5000) _Password = password;
+        }
 
         public Account(string Cookie, string AccountJSON = null)
         {
@@ -109,41 +113,68 @@ namespace RBX_Alt_Manager
 
         public RestRequest MakeRequest(string url, Method method = Method.Get) => new RestRequest(url, method).AddCookie(".ROBLOSECURITY", SecurityToken, "/", ".roblox.com");
 
+        [JsonIgnore] public string LastAuthenticationError;
+
+        private RestRequest AuthenticationTicketRequest(string token = null)
+        {
+            var request = MakeRequest("v1/authentication-ticket/", Method.Post)
+                .AddHeader("Referer", "https://www.roblox.com/")
+                .AddHeader("RBXAuthenticationNegotiation", "1")
+                .AddJsonBody(new { });
+            if (!string.IsNullOrEmpty(token)) request.AddHeader("X-CSRF-TOKEN", token);
+            return request;
+        }
+
+        private static string AuthenticationFailure(RestResponse response)
+        {
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+                return "Roblox rejected this session (HTTP 401). Log in again to update the account cookie.";
+            if ((int)response.StatusCode == 429)
+                return "Roblox is limiting requests (HTTP 429). Wait a moment before trying again.";
+            if (response.Headers?.Any(h => string.Equals(h.Name, "rblx-challenge-id", StringComparison.OrdinalIgnoreCase)) == true)
+                return "Roblox requires additional verification. Open Chrome and complete the verification.";
+            if ((int)response.StatusCode == 0)
+                return "Could not connect to Roblox. Check your network and try again.";
+            return $"Roblox did not issue an authentication ticket (HTTP {(int)response.StatusCode}). Try again later.";
+        }
+
         public bool GetAuthTicket(out string Ticket)
         {
             Ticket = string.Empty;
+            LastAuthenticationError = null;
 
-            if (!GetCSRFToken(out string Token)) return false;
+            if (!GetCSRFToken(out string Token)) { LastAuthenticationError = Token; return false; }
 
-            RestRequest request = MakeRequest("/v1/authentication-ticket/", Method.Post).AddHeader("X-CSRF-TOKEN", Token).AddHeader("Referer", "https://www.roblox.com/games/4924922222/Brookhaven-RP");
+            RestRequest request = AuthenticationTicketRequest(Token);
 
             RestResponse response = AccountManager.AuthClient.Execute(request);
 
-            Parameter TicketHeader = response.Headers.FirstOrDefault(x => x.Name == "rbx-authentication-ticket");
+            Parameter TicketHeader = response.Headers?.FirstOrDefault(x => string.Equals(x.Name, "rbx-authentication-ticket", StringComparison.OrdinalIgnoreCase));
 
             if (TicketHeader != null)
             {
                 Ticket = (string)TicketHeader.Value;
 
-                return true;
+                if (!string.IsNullOrEmpty(Ticket)) return true;
             }
 
+            LastAuthenticationError = AuthenticationFailure(response);
             return false;
         }
 
         public bool GetCSRFToken(out string Result)
         {
-            RestRequest request = MakeRequest("v1/authentication-ticket/", Method.Post).AddHeader("Referer", "https://www.roblox.com/games/4924922222/Brookhaven-RP");
+            RestRequest request = AuthenticationTicketRequest();
 
             RestResponse response = AccountManager.AuthClient.Execute(request);
 
             if (response.StatusCode != HttpStatusCode.Forbidden)
             {
-                Result = $"[{(int)response.StatusCode} {response.StatusCode}] {response.Content}";
+                Result = AuthenticationFailure(response);
                 return false;
             }
 
-            Parameter result = response.Headers.FirstOrDefault(x => x.Name == "x-csrf-token");
+            Parameter result = response.Headers?.FirstOrDefault(x => string.Equals(x.Name, "x-csrf-token", StringComparison.OrdinalIgnoreCase));
 
             string Token = string.Empty;
 
@@ -655,12 +686,11 @@ namespace RBX_Alt_Manager
                             else
                                 LaunchInfo.FileName = $"roblox-player:1+launchmode:play+gameinfo:{Ticket}+launchtime:{LaunchTime}+placelauncherurl:{HttpUtility.UrlEncode($"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame{(string.IsNullOrEmpty(JobID) ? "" : "Job")}&browserTrackerId={BrowserTrackerID}&placeId={PlaceID}{(string.IsNullOrEmpty(JobID) ? "" : ("&gameId=" + JobID))}&isPlayTogetherGame=false{(AccountManager.IsTeleport ? "&isTeleport=true" : "")}")}+browsertrackerid:{BrowserTrackerID}+robloxLocale:en_us+gameLocale:en_us+channel:+LaunchExp:InApp";
                             Process Launcher = Process.Start(LaunchInfo);
+                            _ = Task.Run(AdjustWindowPosition);
                             
                             Launcher.WaitForExit();
 
                             AccountManager.Instance.NextAccount();
-
-                            _ = Task.Run(AdjustWindowPosition);
                         }
                         catch (Exception x)
                         {
@@ -674,48 +704,62 @@ namespace RBX_Alt_Manager
                 }
             }
             else
-                return "ERROR: Invalid Authentication Ticket, re-add the account or try again\n(Failed to get Authentication Ticket, Roblox has probably signed you out)";
+                return "ERROR: " + (LastAuthenticationError ?? "Roblox did not issue an authentication ticket. Try again later.");
         }
 
-        public async void AdjustWindowPosition()
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetWindowText(IntPtr window, string text);
+
+        internal static bool MatchesWindowAccount(string commandLine, string tracker)
         {
-            if (!RobloxWatcher.RememberWindowPositions)
-                return;
-
-            if (!(int.TryParse(GetField("Window_Position_X"), out int PosX) && int.TryParse(GetField("Window_Position_Y"), out int PosY) && int.TryParse(GetField("Window_Width"), out int Width) && int.TryParse(GetField("Window_Height"), out int Height)))
-                return;
-
-            bool Found = false;
-            DateTime Ends = DateTime.Now.AddSeconds(45);
-
-            while (true)
-            {
-                await Task.Delay(350);
-
-                foreach (var process in Process.GetProcessesByName("RobloxPlayerBeta").Reverse())
-                {
-                    if (process.MainWindowHandle == IntPtr.Zero) continue;
-
-                    string CommandLine = process.GetCommandLine();
-
-                    var TrackerMatch = Regex.Match(CommandLine, @"\-b (\d+)");
-                    string TrackerID = TrackerMatch.Success ? TrackerMatch.Groups[1].Value : string.Empty;
-
-                    if (TrackerID != BrowserTrackerID) continue;
-
-                    Found = true;
-
-                    MoveWindow(process.MainWindowHandle, PosX, PosY, Width, Height, true);
-
-                    break;
-                }
-
-                if (Found) break;
-
-                if (DateTime.Now > Ends) break;
-            }
+            if (string.IsNullOrWhiteSpace(commandLine) || string.IsNullOrWhiteSpace(tracker)) return false;
+            var match = Regex.Match(commandLine, @"(?:\bbrowsertrackerid[:=]|(?:^|\s)-b\s+""?)(\d+)(?=[+\s""&]|$)", RegexOptions.IgnoreCase);
+            return match.Success && match.Groups[1].Value == tracker;
         }
 
+        public async Task AdjustWindowPosition()
+        {
+            string tracker = BrowserTrackerID;
+            if (string.IsNullOrWhiteSpace(tracker)) return;
+            int posX = 0, posY = 0, width = 0, height = 0;
+            bool move = RobloxWatcher.RememberWindowPositions &&
+                int.TryParse(GetField("Window_Position_X"), out posX) && int.TryParse(GetField("Window_Position_Y"), out posY) &&
+                int.TryParse(GetField("Window_Width"), out width) && int.TryParse(GetField("Window_Height"), out height);
+            Process target = null;
+            try
+            {
+                DateTime deadline = DateTime.UtcNow.AddSeconds(90);
+                while (target == null && !Program.Closed && DateTime.UtcNow < deadline)
+                {
+                    foreach (var process in Process.GetProcessesByName("RobloxPlayerBeta").Reverse())
+                    {
+                        bool keep = false;
+                        try
+                        {
+                            if (target == null && process.MainWindowHandle != IntPtr.Zero && MatchesWindowAccount(process.GetCommandLine(), tracker))
+                            { target = process; keep = true; }
+                        }
+                        catch (Exception) { /* Process may have exited during discovery. */ }
+                        finally { if (!keep) process.Dispose(); }
+                    }
+                    if (target == null) await Task.Delay(500);
+                }
+                while (target != null && !Program.Closed && !target.HasExited)
+                {
+                    target.Refresh();
+                    IntPtr window = target.MainWindowHandle;
+                    if (window != IntPtr.Zero)
+                    {
+                        if (!string.IsNullOrWhiteSpace(Username) && target.MainWindowTitle != Username)
+                            SetWindowText(window, Username);
+                        if (move) { MoveWindow(window, posX, posY, width, height, true); move = false; }
+                    }
+                    await Task.Delay(2000);
+                }
+            }
+            catch (Exception error) { Program.Logger.Error("Roblox window update failed: " + error.GetType().FullName); }
+            finally { target?.Dispose(); }
+        }
         public string SetServer(long PlaceID, string JobID, out bool Successful)
         {
             Successful = false;

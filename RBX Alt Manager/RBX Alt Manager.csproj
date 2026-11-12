@@ -380,6 +380,9 @@
     </Compile>
     <Compile Include="Classes\Batch.cs" />
     <Compile Include="Classes\AccountBrowser.cs" />
+    <Compile Include="Classes\ChromeExtensionBridge.cs" />
+    <Compile Include="Classes\MultiRobloxSession.cs" />
+    <Compile Include="Classes\RobloxWindowMonitor.cs" />
     <Compile Include="Classes\ClientSettingsPatcher.cs" />
     <Compile Include="Classes\Cryptography.cs" />
     <Compile Include="Classes\MenuButton.cs">
@@ -619,17 +622,6 @@
     <None Include="Resources\disc.png" />
     <None Include="Resources\SaveIconSmall.png" />
     <Content Include="Resources\server_icon.ico" />
-  </ItemGroup>
-  <ItemGroup>
-    <COMReference Include="IWshRuntimeLibrary">
-      <Guid>{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B}</Guid>
-      <VersionMajor>1</VersionMajor>
-      <VersionMinor>0</VersionMinor>
-      <Lcid>0</Lcid>
-      <WrapperTool>tlbimp</WrapperTool>
-      <Isolated>False</Isolated>
-      <EmbedInteropTypes>True</EmbedInteropTypes>
-    </COMReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Target Name="AfterBuild">
